@@ -1,48 +1,132 @@
 #!/bin/bash
-
+###############################################################################
+# cronic v3 - cron job report wrapper with optionally piped output
+###############################################################################
+# 
+# Copyright (c) 2014 Genome Research Ltd. 
+# 
+# Author: Joshua C. Randall <jcrandall@alum.mit.edu> 
+# 
+# This program is free software: you can redistribute it and/or modify it under 
+# the terms of the GNU General Public License as published by the Free Software 
+# Foundation; either version 3 of the License, or (at your option) any later 
+# version. 
+# 
+# This program is distributed in the hope that it will be useful, but WITHOUT 
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS 
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more 
+# details. 
+# 
+# You should have received a copy of the GNU General Public License along with 
+# this program. If not, see <http://www.gnu.org/licenses/>. 
+# 
+# Based largely on Cronic v2 by Chuck Houpt: 
+# 
 # Cronic v2 - cron job report wrapper
 # Copyright 2007 Chuck Houpt. No rights reserved, whatsoever.
 # Public Domain CC0: http://creativecommons.org/publicdomain/zero/1.0/
 
+###############################################################################
+# cronic v3
+###############################################################################
+# Without any options, works just as v2, outputting an error report to stdout 
+# only if the command exits with non-zero status or if it prints errors to 
+# stderr.
+#
+# However, cronic v3 also supports an option `-p` which specifies a command 
+# to pipe the cronic report to (rather than outputting it to stdout via `cat`).
+# 
+# Uses for this might include running a sendmail command to email the report to 
+# multiple addresses or from a specific "From:" address (on some systems the 
+# cron daemon is set to email everything from root@hostname which may cause 
+# issues if emails are used to feed into a request tracking system like RT.
+# 
+# One could also use this to send the report via a command-line XMPP or 
+# Twitter tool, to submit it to a custom alerting or logging system (such as 
+# by using `curl` with a REST API).
+# 
+# EXAMPLE USAGE
+# 
+# To email the report via the `mailx` command, one might do something like:
+# 
+#    cronic -p 'mailx -s "Cronic report from $USER at $HOSTNAME" \
+#      -r "john.doe@example.com" jane.doe@example.com' ...
+# 
+###############################################################################
+
 set -eu
 
+# default output command is "cat" which just outputs the report to stdout
+OUT_CMD="cat"
+
+# parse options and reset output command if requested
+while getopts ":p:" opt "$@"; do 
+    case $opt in
+	p)
+            OUT_CMD="$OPTARG"
+	    ;;
+	\?)
+	    echo "cronicpiper encountered invalid option: -$OPTARG" >&2
+	    exit 1
+	    ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# temporary files to use for output and report
 OUT=/tmp/cronic.out.$$
 ERR=/tmp/cronic.err.$$
 TRACE=/tmp/cronic.trace.$$
+REPORT=/tmp/cronic.report.$$
 
+# make sure these files don't exist
+rm -f "${OUT}"
+rm -f "${ERR}"
+rm -f "${TRACE}"
+rm -f "${REPORT}"
+
+# don't exit immediately if subcommand fails
 set +e
-"$@" >$OUT 2>$TRACE
+"$@" >${OUT} 2>${TRACE}
 RESULT=$?
 set -e
 
+# if we have any trace output (prefixed by $PS4), strip it out to get just the stderr itself in ERR
 PATTERN="^${PS4:0:1}\\+${PS4:1}"
-if grep -aq "$PATTERN" $TRACE
+if grep -aq "${PATTERN}" ${TRACE}
 then
-    ! grep -av "$PATTERN" $TRACE > $ERR
+    ! grep -av "${PATTERN}" ${TRACE} > ${ERR}
 else
-    ERR=$TRACE
+    ERR=${TRACE}
 fi
 
-if [ $RESULT -ne 0 -o -s "$ERR" ]
+# generate report into REPORT
+if [ ${RESULT} -ne 0 -o -s "${ERR}" ]
     then
-    echo "Cronic detected failure or error output for the command:"
-    echo "$@"
-    echo
-    echo "RESULT CODE: $RESULT"
-    echo
-    echo "ERROR OUTPUT:"
-    cat "$ERR"
-    echo
-    echo "STANDARD OUTPUT:"
-    cat "$OUT"
-    if [ $TRACE != $ERR ]
+    touch ${REPORT}
+    echo "Cronic detected failure or error output for the command:" >> ${REPORT}
+    echo "$@" >> ${REPORT}
+    echo >> ${REPORT}
+    echo "RESULT CODE: ${RESULT}" >> ${REPORT}
+    echo >> ${REPORT}
+    echo "ERROR OUTPUT:" >> ${REPORT}
+    cat "${ERR}" >> ${REPORT}
+    echo >> ${REPORT}
+    echo "STANDARD OUTPUT:" >> ${REPORT}
+    cat "${OUT}" >> ${REPORT}
+    if [ ${TRACE} != ${ERR} ]
     then
-        echo
-        echo "TRACE-ERROR OUTPUT:"
-        cat "$TRACE"
+        echo >> ${REPORT}
+        echo "TRACE-ERROR OUTPUT:" >> ${REPORT}
+        cat "${TRACE}" >> ${REPORT}
     fi
+
+    # output report to specified OUT_CMD
+    bash -c "cat ${REPORT} | ${OUT_CMD}"
 fi
 
-rm -f "$OUT"
-rm -f "$ERR"
-rm -f "$TRACE"
+# clean up temporary files
+rm -f "${OUT}"
+rm -f "${ERR}"
+rm -f "${TRACE}"
+rm -f "${REPORT}"
